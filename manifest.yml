@@ -20,21 +20,127 @@ modules:
     - key: oauth-callback-handler
       handler: oauth.oauthCallbackHandler
       
-    # Dedicated handler for the Zapier webhook (now in worklogHandler.js)
-    - key: worklog-create-handler 
-      handler: worklogHandler.handler # Point to the new handler
+    # --- NEW Worklog Handlers ---
+    - key: worklog-create
+      handler: worklogCreateHandler.handler
+    - key: worklog-update
+      handler: worklogUpdateHandler.handler
+    - key: worklog-delete
+      handler: worklogDeleteHandler.handler
+    # --- End NEW Worklog Handlers ---
+
+    # NEW: Functions for Admin Panel
+    - key: getAdminPageContext # Fetches OAuth status, Zapier secret, Webhook URLs
+      handler: index.handler
+    - key: regenerateZapierSecret # Generates and saves a new Zapier secret
+      handler: index.handler
 
   webtrigger:
     # Ensure only one definition for each key
     - key: oauth-callback-trigger
       function: oauth-callback-handler # Points to the function key for the dedicated handler
+      # This trigger needs to return dynamic HTML, so it remains dynamic (or default)
+
+    # --- NEW Worklog Web Triggers (STATIC) ---
+    - key: worklog-create-trigger
+      function: worklog-create
       response:
-        type: custom
-    - key: zapier-webhook-trigger 
-      function: worklog-create-handler # UPDATED: Points to the new worklog create handler function key
+        type: static
+        outputs:
+          - key: success-created
+            statusCode: 200
+            contentType: application/json
+            body: '{"success": true, "action": "created"}'
+          - key: error-bad-request
+            statusCode: 400
+            contentType: application/json
+            body: '{"success": false, "error": "Bad Request"}'
+          - key: error-unauthorized
+            statusCode: 401
+            contentType: application/json
+            body: '{"success": false, "error": "Unauthorized or Re-authentication required"}'
+          - key: error-forbidden
+            statusCode: 403 # For cases like permission errors from Jira API
+            contentType: application/json
+            body: '{"success": false, "error": "Forbidden"}'
+          - key: error-internal
+            statusCode: 500
+            contentType: application/json
+            body: '{"success": false, "error": "Internal Server Error"}'
+          - key: error-jira-api # Generic fallback for other Jira API errors
+            statusCode: 502
+            contentType: application/json
+            body: '{"success": false, "error": "Jira API Error"}'
+            
+    - key: worklog-update-trigger
+      function: worklog-update
       response:
-        type: custom
-      
+        type: static
+        outputs:
+          - key: success-updated
+            statusCode: 200
+            contentType: application/json
+            body: '{"success": true, "action": "updated"}'
+          - key: error-bad-request # Reuse keys for common errors
+            statusCode: 400
+            contentType: application/json
+            body: '{"success": false, "error": "Bad Request"}'
+          - key: error-unauthorized
+            statusCode: 401
+            contentType: application/json
+            body: '{"success": false, "error": "Unauthorized or Re-authentication required"}'
+          - key: error-forbidden
+            statusCode: 403
+            contentType: application/json
+            body: '{"success": false, "error": "Forbidden"}'
+          - key: error-not-found # Specific for update/delete if worklog ID doesn't exist
+            statusCode: 404
+            contentType: application/json
+            body: '{"success": false, "error": "Worklog Not Found"}'
+          - key: error-internal
+            statusCode: 500
+            contentType: application/json
+            body: '{"success": false, "error": "Internal Server Error"}'
+          - key: error-jira-api
+            statusCode: 502
+            contentType: application/json
+            body: '{"success": false, "error": "Jira API Error"}'
+
+    - key: worklog-delete-trigger
+      function: worklog-delete
+      response:
+        type: static
+        outputs:
+          - key: success-deleted
+            statusCode: 200 # Return 200 OK to client even if Jira gives 204
+            contentType: application/json
+            body: '{"success": true, "action": "deleted"}'
+          - key: error-bad-request
+            statusCode: 400
+            contentType: application/json
+            body: '{"success": false, "error": "Bad Request"}'
+          - key: error-unauthorized
+            statusCode: 401
+            contentType: application/json
+            body: '{"success": false, "error": "Unauthorized or Re-authentication required"}'
+          - key: error-forbidden
+            statusCode: 403
+            contentType: application/json
+            body: '{"success": false, "error": "Forbidden"}'
+          - key: error-not-found 
+            statusCode: 404
+            contentType: application/json
+            body: '{"success": false, "error": "Worklog Not Found"}'            
+          - key: error-internal
+            statusCode: 500
+            contentType: application/json
+            body: '{"success": false, "error": "Internal Server Error"}'
+          - key: error-jira-api 
+            statusCode: 502
+            contentType: application/json
+            body: '{"success": false, "error": "Jira API Error"}'
+    # --- End NEW Worklog Web Triggers ---
+
   jira:globalPage:
     - key: worklog-handler-global-page
       resource: main # Should match the resource key below
@@ -51,6 +157,7 @@ permissions:
     - 'read:jira-user'
     - 'read:me'
     - 'read:account'
+    - 'manage:jira-configuration'
   external:
     fetch:
       backend:
@@ -58,7 +165,7 @@ permissions:
         - auth.atlassian.com
 
 app:
-  id: ari:cloud:ecosystem::app/8821cede-9470-4761-ba54-ad700c17298d
+  id: ari:cloud:ecosystem::app/a8de7690-6599-485e-ada7-acceda2fd795
   # REMOVED: name (deprecated)
   runtime:
     name: nodejs22.x

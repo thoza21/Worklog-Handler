@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { invoke, router } from '@forge/bridge';
 
 // --- Helper Function for Time --- //
@@ -66,116 +66,99 @@ function TokenInfo({ expiresAt, timestamp }) {
   );
 }
 
+// --- Copyable Input Component --- //
+function CopyableInput({ label, value, id }) {
+  const handleCopy = () => {
+    navigator.clipboard.writeText(value)
+      .then(() => console.log(`${label} copied!`))
+      .catch(err => console.error(`Failed to copy ${label}:`, err));
+  };
+
+  return (
+    <div>
+      <label htmlFor={id} style={{ fontWeight: 'bold', display: 'block', marginBottom: '4px' }}>{label}:</label>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <input
+          id={id}
+          type="text"
+          readOnly
+          value={value || '-'}
+          style={styles.copyableInput}
+        />
+        <button onClick={handleCopy} style={styles.copyButton} title={`Copy ${label}`}>📄</button>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [loading, setLoading] = useState(true);
-  const [context, setContext] = useState(null);
-  const [secret, setSecret] = useState(null);
-  const [generating, setGenerating] = useState(false);
-  const [authStatus, setAuthStatus] = useState({ 
-    checking: true, 
-    authenticated: false, 
-    expiresAt: null, 
-    timestamp: null, 
-    error: null 
-  });
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [accountId, setAccountId] = useState(null);
+  const [zapierSecret, setZapierSecret] = useState(null);
+  const [webhookUrls, setWebhookUrls] = useState({ create: null, update: null, delete: null });
+  const [generatingSecret, setGeneratingSecret] = useState(false);
+  const [authStatus, setAuthStatus] = useState({ checking: true, authenticated: false, expiresAt: null, timestamp: null, error: null });
+  const [generalError, setGeneralError] = useState(null);
+
+  const fetchAdminContext = useCallback(async () => {
+    setLoading(true);
+    setGeneralError(null);
+    try {
+      console.log('[fetchAdminContext] Fetching context...');
+      const contextData = await invoke('getAdminPageContext');
+      console.log('[fetchAdminContext] Context received:', contextData);
+
+      if (contextData.error) {
+        throw new Error(contextData.error);
+      }
+      
+      setIsAdmin(contextData.isAdmin || false);
+      setAuthStatus(contextData.authStatus || { checking: false, authenticated: false, error: 'Auth status missing' });
+      setZapierSecret(contextData.zapierSecret);
+      setWebhookUrls(contextData.webhookUrls || { create: null, update: null, delete: null });
+
+    } catch (err) {
+      console.error('[fetchAdminContext] Failed to load context:', err);
+      setGeneralError(err.message || 'Failed to load application context.');
+      setIsAdmin(false);
+      setAuthStatus({ checking: false, authenticated: false, error: 'Context load failed' });
+      setZapierSecret(null);
+      setWebhookUrls({ create: null, update: null, delete: null });
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    const loadContext = async () => {
-      try {
-        console.log('Loading page context...');
-        const ctx = await invoke('getPageContext');
-        console.log('[Initial Load] Context received:', ctx);
-        setContext(ctx);
-        setSecret(ctx.secret || null);
-        setAuthStatus({
-          checking: false,
-          authenticated: ctx.authenticated || false,
-          expiresAt: ctx.expiresAt || null,
-          timestamp: ctx.timestamp || null,
-          error: ctx.error || null
-        });
-        console.log('[Initial Load] Initial authStatus set to:', { 
-          checking: false, 
-          authenticated: ctx.authenticated || false,
-          expiresAt: ctx.expiresAt || null,
-          timestamp: ctx.timestamp || null,
-          error: ctx.error || null
-        });
-        setLoading(false);
-        console.log('Context loaded successfully');
-      } catch (err) {
-        console.error('Failed to load context:', err);
-        setLoading(false);
-        setContext({ error: err.message });
-        setAuthStatus({ checking: false, authenticated: false, expiresAt: null, timestamp: null, error: 'Context load failed' });
+    fetchAdminContext();
+  }, [fetchAdminContext]);
+
+  const handleRegenerateSecret = useCallback(async () => {
+    setGeneratingSecret(true);
+    try {
+      const result = await invoke('regenerateZapierSecret');
+      if (result && result.newSecret) {
+        setZapierSecret(result.newSecret);
+      } else {
+        console.error('Regenerate secret did not return a new secret.');
       }
-    };
-    
-    loadContext();
+    } catch (err) {
+      console.error('Failed to generate secret:', err);
+    } finally {
+      setGeneratingSecret(false);
+    }
   }, []);
 
   useEffect(() => {
     const checkAuthOnFocus = async () => {
-      // Add a small delay to allow storage writes to potentially complete
-      // This is a heuristic, not guaranteed, but might help in edge cases
-      await new Promise(resolve => setTimeout(resolve, 250)); 
-      
-      console.log('>>> Window focused event triggered <<< (Diagnostic Mode)'); 
-      if (context?.accountId) {
-        console.log('[Focus Check] Account ID found, proceeding to check auth status...');
-        try {
-          setAuthStatus(prev => ({ ...prev, checking: true })); 
-          const status = await invoke('getUserAuthStatus');
-          console.log('[Focus Check] Auth status received from invoke:', status); 
-          setAuthStatus({
-            checking: false,
-            authenticated: status.authenticated,
-            expiresAt: status.expiresAt || null,
-            timestamp: status.timestamp || null,
-            error: status.error || null
-          });
-          console.log('[Focus Check] Auth status updated to:', {
-            checking: false,
-            authenticated: status.authenticated,
-            expiresAt: status.expiresAt || null,
-            timestamp: status.timestamp || null,
-            error: status.error || null
-          });
-        } catch (err) {
-          console.error('[Focus Check] Failed to check auth status on focus:', err);
-          setAuthStatus({
-            checking: false,
-            authenticated: false,
-            expiresAt: null,
-            timestamp: null,
-            error: err.message
-          });
-        }
-      } else {
-        console.log('[Focus Check] Skipping auth check on focus: no accountId in context');
-      }
+        await new Promise(resolve => setTimeout(resolve, 250));
+        console.log('Window focused, re-checking auth...');
+        fetchAdminContext(); 
     };
-
     window.addEventListener('focus', checkAuthOnFocus);
-    console.log('[Focus Check] Added focus event listener. (Diagnostic Mode)');
-
-    return () => {
-      console.log('[Focus Check] Removing focus event listener. (Diagnostic Mode)');
-      window.removeEventListener('focus', checkAuthOnFocus);
-    };
-  }, [context?.accountId]); 
-
-  const generateNewSecret = async () => {
-    setGenerating(true);
-    try {
-      const newSecret = await invoke('setNewSecret');
-      setSecret(newSecret);
-    } catch (err) {
-      console.error('Failed to generate secret:', err);
-    } finally {
-      setGenerating(false);
-    }
-  };
+    return () => window.removeEventListener('focus', checkAuthOnFocus);
+  }, [fetchAdminContext]);
 
   if (loading) {
     return (
@@ -187,114 +170,96 @@ export default function App() {
       </div>
     );
   }
-  
-  if (!context) return <div>Error loading context.</div>;
-  if (context?.error && !context.accountId) return <div>Error: {context.error}</div>;
 
-  // Add console log here to see the final authStatus used for rendering
-  console.log('[Render] Final authStatus being used:', authStatus);
+  if (generalError) {
+      return <div style={{ padding: '2rem', color: 'red' }}>Error loading application: {generalError}</div>;
+  }
 
   return (
     <div style={{ padding: '2rem', fontFamily: 'sans-serif' }}>
       <h1>🛠️ Worklog Manager</h1>
-      {/* Conditionally render account ID only if context and accountId exist */}
-      {context?.accountId ? 
-        <p>You are logged in as: <code>{context.accountId}</code></p> 
-        : <p>Loading user info...</p>}
+      {accountId ? <p>You are logged in as: <code>{accountId}</code></p> : null}
 
-      {context?.isAdmin ? (
+      {isAdmin ? (
         <AdminView
-          secret={secret}
-          onGenerateSecret={generateNewSecret}
-          generating={generating}
+          zapierSecret={zapierSecret}
+          webhookUrls={webhookUrls}
+          onGenerateSecret={handleRegenerateSecret}
+          generating={generatingSecret}
           authStatus={authStatus}
-          zapierWebhookUrl={context.zapierWebhookUrl}
         />
       ) : (
-        <UserView 
+        <UserView
           authStatus={authStatus}
-          accountId={context?.accountId}
         />
       )}
     </div>
   );
 }
 
-function AdminView({ secret, onGenerateSecret, generating, authStatus, zapierWebhookUrl }) {
+function AdminView({ zapierSecret, webhookUrls, onGenerateSecret, generating, authStatus }) {
+  const secretDisplayValue = typeof zapierSecret === 'string' && zapierSecret.startsWith('{Error') 
+    ? 'Error retrieving secret' 
+    : zapierSecret;
+
   return (
     <div style={{ marginTop: '2rem' }}>
       <h2>🔐 Admin Panel</h2>
-
       <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-        <div style={{ 
-          padding: '16px', 
-          backgroundColor: '#F4F5F7', 
-          borderRadius: '8px',
-          border: '1px solid #DFE1E6'
-        }}>
-          <h3 style={{ margin: '0 0 12px 0' }}>Zapier Integration</h3>
-          <button 
-            onClick={onGenerateSecret} 
+        <div style={styles.sectionContainer}>
+          <h3 style={styles.sectionHeader}>Zapier Integration</h3>
+          <button
+            onClick={onGenerateSecret}
             disabled={generating}
-            style={{
-              padding: '8px 16px',
-              backgroundColor: '#0052CC',
-              color: '#fff',
-              border: 'none',
-              borderRadius: '3px',
-              cursor: generating ? 'default' : 'pointer',
-              opacity: generating ? 0.7 : 1
-            }}
+            style={styles.actionButton}
           >
-            {generating ? 'Generating...' : secret ? 'Regenerate Secret' : 'Generate Secret'}
+            {generating ? 'Generating...' : (zapierSecret && !zapierSecret.startsWith('{Error')) ? 'Regenerate Secret' : 'Generate Secret'}
           </button>
 
-          {secret && (
-            <div style={{ marginTop: '16px' }}>
-              <p><strong>Zapier Webhook:</strong></p>
-              <code style={{ 
-                display: 'block', 
-                padding: '8px', 
-                backgroundColor: '#F8F9FA', 
-                border: '1px solid #DFE1E6',
-                borderRadius: '3px'
-              }}>
-                {zapierWebhookUrl ? zapierWebhookUrl : 'Webhook URL not available'}
-              </code>
-              <p><strong>Header:</strong></p>
-              <code style={{ 
-                display: 'block', 
-                padding: '8px', 
-                backgroundColor: '#F8F9FA', 
-                border: '1px solid #DFE1E6',
-                borderRadius: '3px'
-              }}>x-zapier-secret: {secret}</code>
+          {zapierSecret && !zapierSecret.startsWith('{Error') && (
+            <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <CopyableInput
+                    id="zapier-secret"
+                    label="Header (x-zapier-secret)"
+                    value={secretDisplayValue || 'Secret not set or error.'} 
+                />
+                <CopyableInput 
+                    id="webhook-create"
+                    label="Create Worklog URL"
+                    value={webhookUrls?.create || 'Not available'} 
+                />
+                 <CopyableInput 
+                    id="webhook-update"
+                    label="Update Worklog URL"
+                    value={webhookUrls?.update || 'Not available'} 
+                />
+                 <CopyableInput 
+                    id="webhook-delete"
+                    label="Delete Worklog URL"
+                    value={webhookUrls?.delete || 'Not available'} 
+                />
             </div>
           )}
+           {zapierSecret && zapierSecret.startsWith('{Error') && (
+                <p style={{color: 'red', marginTop: '10px'}}>{secretDisplayValue}</p>
+           )}
+           {!zapierSecret && !generating && (
+               <p style={{color: 'orange', marginTop: '10px'}}>No Zapier secret is currently configured. Click 'Generate Secret'.</p>
+           )}
         </div>
 
-        <div style={{ 
-          padding: '16px', 
-          backgroundColor: '#F4F5F7', 
-          borderRadius: '8px',
-          border: '1px solid #DFE1E6'
-        }}>
-          <h3 style={{ margin: '0 0 12px 0' }}>OAuth Status</h3>
-          
+        <div style={styles.sectionContainer}>
+          <h3 style={styles.sectionHeader}>OAuth Status</h3>
           {authStatus.checking ? (
             <p>Checking authentication status...</p>
           ) : authStatus.authenticated ? (
             <div>
-              <p style={styles.successMessage}>
-                ✅ Your account is connected
-              </p>
+              <p style={styles.successMessage}>✅ Your account is connected</p>
               <TokenInfo expiresAt={authStatus.expiresAt} timestamp={authStatus.timestamp} />
             </div>
           ) : (
             <div>
-              <p style={styles.errorMessage}>
-                ⚠️ Your account is not connected {authStatus.error ? `(${authStatus.error})` : ''}
-              </p>
+              <p style={styles.errorMessage}>⚠️ Your account is not connected {authStatus.error ? `(${authStatus.error})` : ''}</p>
               <OAuthButton />
             </div>
           )}
@@ -304,7 +269,7 @@ function AdminView({ secret, onGenerateSecret, generating, authStatus, zapierWeb
   );
 }
 
-function UserView({ authStatus, accountId }) {
+function UserView({ authStatus }) {
   return (
     <div style={{ marginTop: '2rem' }}>
       <h2>📅 Your Worklogs</h2>
@@ -317,7 +282,6 @@ function UserView({ authStatus, accountId }) {
             ✅ Your Jira account is connected
           </div>
           <TokenInfo expiresAt={authStatus.expiresAt} timestamp={authStatus.timestamp} />
-          <p>Your worklogs will appear here soon.</p>
         </div>
       ) : (
         <div style={{ marginTop: '1rem' }}>
@@ -342,13 +306,10 @@ function OAuthButton() {
 
   const handleOAuthClick = async () => {
     if (isLoading) return;
-    
     setIsLoading(true);
     setError(null);
-    
     try {
       console.log('[OAuthButton] Starting OAuth flow...');
-      
       let authUrl;
       try {
         authUrl = await invoke('getOAuthLoginUrl');
@@ -360,10 +321,8 @@ function OAuthButton() {
         console.error('[OAuthButton] Failed to fetch OAuth URL:', urlError);
         throw new Error('Could not generate login URL. Please try again.');
       }
-      
-      await router.open(authUrl); 
+      await router.open(authUrl);
       console.log('[OAuthButton] Opened OAuth URL via router.open');
-
     } catch (err) {
       console.error('[OAuthButton] OAuth process error:', err);
       setError(err.message || 'Failed to start authorization process.');
@@ -377,34 +336,13 @@ function OAuthButton() {
       <button
         onClick={handleOAuthClick}
         disabled={isLoading}
-        style={{
-          padding: '0.75rem 1.25rem',
-          backgroundColor: '#0052CC',
-          color: '#fff',
-          border: 'none',
-          borderRadius: '6px',
-          fontWeight: 'bold',
-          fontSize: '14px',
-          cursor: isLoading ? 'default' : 'pointer',
-          opacity: isLoading ? 0.7 : 1,
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px'
-        }}
+        style={styles.actionButton}
       >
         <span>{isLoading ? '⏳' : '🔐'}</span>
-        <span>{isLoading ? 'Connecting...' : 'Connect to Jira'}</span>
+        <span>{isLoading ? 'Connecting...' : 'Connect / Reconnect Jira Account'}</span>
       </button>
-      
       {error && (
-        <div style={{ 
-          color: '#BF2600', 
-          marginTop: '8px',
-          fontSize: '14px',
-          padding: '8px',
-          backgroundColor: '#FFEBE6',
-          borderRadius: '3px',
-        }}>
+        <div style={styles.inlineError}>
           Error: {error}
         </div>
       )}
@@ -412,7 +350,6 @@ function OAuthButton() {
   );
 }
 
-// --- Styles Object (Optional but good practice) --- //
 const styles = {
   sectionContainer: {
     padding: '16px', 
@@ -422,6 +359,40 @@ const styles = {
   },
   sectionHeader: {
     margin: '0 0 12px 0'
+  },
+  actionButton: {
+    padding: '8px 16px',
+    backgroundColor: '#0052CC',
+    color: '#fff',
+    border: 'none',
+    borderRadius: '3px',
+    cursor: 'pointer',
+    fontSize: '14px',
+    fontWeight: '500',
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '6px',
+    '&:disabled': {
+      cursor: 'default',
+      opacity: 0.7
+    }
+  },
+  copyableInput: {
+    flexGrow: 1,
+    padding: '8px',
+    backgroundColor: '#FAFBFC',
+    border: '1px solid #DFE1E6',
+    borderRadius: '3px',
+    fontFamily: 'monospace',
+    fontSize: '13px'
+  },
+  copyButton: {
+    padding: '6px 8px',
+    backgroundColor: '#DEEBFF',
+    color: '#0052CC',
+    border: '1px solid #B3D4FF',
+    borderRadius: '3px',
+    cursor: 'pointer'
   },
   successMessage: {
     backgroundColor: '#E3FCEF', 
@@ -436,6 +407,14 @@ const styles = {
     padding: '12px', 
     borderRadius: '3px',
     marginBottom: '16px'
+  },
+  inlineError: {
+    color: '#BF2600',
+    marginTop: '8px',
+    fontSize: '14px',
+    padding: '8px',
+    backgroundColor: '#FFEBE6',
+    borderRadius: '3px',
   },
   tokenInfoContainer: {
     marginTop: '12px',

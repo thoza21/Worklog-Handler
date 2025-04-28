@@ -1,7 +1,7 @@
 import Resolver from '@forge/resolver';
 import { storage, webTrigger, asUser, route } from '@forge/api';
-import { refreshOAuthToken } from './oauth';
-import { generateStateParameter } from './state';
+import crypto from 'crypto'; // For secure random generation
+import { refreshOAuthToken } from './oauth'; // Needed by internal getUserAuthStatus
 
 const resolver = new Resolver();
 
@@ -69,87 +69,47 @@ resolver.define('setNewSecret', async () => {
   await storage.set('zapier-secret', newSecret);
   return newSecret;
 });
- 
+
 // 🔗 Provide OAuth login URL (secure via env vars)
 resolver.define('getOAuthLoginUrl', async ({ context }) => {
+  const functionName = 'getOAuthLoginUrl';
+  console.log(`[${functionName}] Generating OAuth URL...`);
   try {
-    console.log('🔍 Generating OAuth URL, context:', JSON.stringify({ 
-      hasContext: !!context, 
-      hasUser: !!context?.user,
-      accountId: context?.user?.accountId || 'none'
-    }));
-    
     const CLIENT_ID = process.env.CLIENT_ID;
-    
-    if (!CLIENT_ID) {
-      console.error('❌ Missing OAuth configuration: CLIENT_ID');
-      throw new Error('OAuth Client ID configuration is missing');
-    }
-    
-    // Get the URL for the dedicated OAuth callback webtrigger
+    if (!CLIENT_ID) throw new Error('OAuth Client ID configuration missing');
+
     let redirectUri;
     try {
       redirectUri = await webTrigger.getUrl('oauth-callback-trigger');
-      console.log(`✅ Successfully obtained OAuth redirect URI: ${redirectUri}`);
+      console.log(`[${functionName}] Redirect URI: ${redirectUri}`);
     } catch (urlError) {
-      console.error(`❌ Failed to get webtrigger URL for 'oauth-callback-trigger': ${urlError.message}`, urlError);
-      throw new Error('Failed to generate redirect URL. Ensure manifest is correct and deployed.');
+      console.error(`[${functionName}] Failed to get webtrigger URL:`, urlError);
+      throw new Error('Failed to generate redirect URL.');
     }
 
-    // Get the account ID if available
-    const accountId = context?.user?.accountId;
-    
-    // Generate a unique state parameter for security
-    const state = generateStateParameter();
-    
-    // Create the redirect URI with standard OAuth parameters
-    const authUrl = constructOAuthUrl(CLIENT_ID, redirectUri, state);
-    
-    // Only try to store state if we have an account ID
-    if (accountId) {
-      try {
-        // Store the state parameter for this user
-        await storage.set(`oauth_state:${accountId}`, {
-          state,
-          createdAt: Date.now()
-        });
-        console.log(`✅ Stored OAuth state for user: ${accountId}`);
-      } catch (storageError) {
-        // Just log the error but don't fail the overall request
-        console.error(`⚠️ Failed to store OAuth state: ${storageError.message}`);
-      }
-    } else {
-      console.log(`ℹ️ No user context available, proceeding without state storage`);
-    }
-    
-    console.log(`🔗 Constructed final OAuth URL: ${authUrl}`);
+    const authUrl = constructOAuthUrl(CLIENT_ID, redirectUri); // Call helper without state
+    console.log(`[${functionName}] Constructed OAuth URL.`);
     return authUrl;
   } catch (error) {
-    console.error(`❌ Error generating OAuth URL: ${error.message}`, error);
-    // Provide a more specific error message if possible
-    const finalMessage = error.message.includes('Failed to generate redirect URL') 
-      ? error.message 
-      : `Failed to generate authorization URL: ${error.message}`;
-    throw new Error(finalMessage);
+    console.error(`[${functionName}] Error: ${error.message}`, error);
+    throw new Error(`Failed to generate authorization URL: ${error.message}`);
   }
 });
 
 /**
  * Construct the OAuth URL with all required parameters
  */
-function constructOAuthUrl(clientId, redirectUri, state) {
-  // Use proper URL encoding for all parameters
+function constructOAuthUrl(clientId, redirectUri) {
   const encodedRedirectUri = encodeURIComponent(redirectUri);
   const scopes = 'read:me read:account read:jira-user write:jira-work offline_access';
   const encodedScopes = encodeURIComponent(scopes);
-  const encodedState = encodeURIComponent(state);
-  
+
+  // Construct URL without state
   return `https://auth.atlassian.com/authorize`
     + `?audience=api.atlassian.com`
     + `&client_id=${clientId}`
     + `&scope=${encodedScopes}`
     + `&redirect_uri=${encodedRedirectUri}`
-    + `&state=${encodedState}`
     + `&response_type=code`
     + `&prompt=consent`;
 }
@@ -371,4 +331,195 @@ async function cleanupOldStates(accountId) {
   }
 }
 
+// --- Helper: Generate Secure Random String ---
+/**
+ * Generates a cryptographically secure random string.
+ * @param {number} length - The desired length of the string.
+ * @returns {string} A random URL-safe base64 string.
+ */
+function generateSecureRandomString(length = 32) {
+  return crypto.randomBytes(Math.ceil(length * 3 / 4))
+    .toString('base64')
+    .slice(0, length)
+    .replace(/\+/g, '0')
+    .replace(/\//g, '_');
+}
+
+// --- Resolver Definition: Get Admin Page Context ---
+/**
+ * Fetches all necessary data for the Admin/Global page UI.
+ * Includes Admin status, OAuth status, Zapier secret, and webhook URLs.
+ */
+resolver.define('getAdminPageContext', async ({ context }) => {
+  const functionName = 'getAdminPageContext';
+  console.log(`[${functionName}] Fetching admin page context...`);
+  const accountId = context?.accountId;
+
+  if (!accountId) {
+    console.error(`[${functionName}] No accountId found in context.`);
+    return {
+        isAdmin: false, // Assume not admin if no context
+        authStatus: { authenticated: false, error: 'User context not found' },
+        zapierSecret: null,
+        webhookUrls: null,
+        error: 'User context not found'
+    };
+  }
+
+  console.log(`[${functionName}] User accountId: ${accountId}`);
+
+  try {
+    // --- Check Admin Permissions --- 
+    let isAdmin = false;
+    try {
+        console.log(`[${functionName}] Checking ADMINISTER permission...`);
+        const res = await asUser().requestJira(route`/rest/api/3/mypermissions?permissions=ADMINISTER`);
+        const data = await res.json();
+        isAdmin = data?.permissions?.ADMINISTER?.havePermission || false;
+        console.log(`[${functionName}] User isAdmin: ${isAdmin}`);
+    } catch (permError) {
+         console.error(`[${functionName}] Failed to check admin permissions:`, permError);
+         // Decide how to handle - fail, or assume not admin? Assume not admin.
+    }
+    // --- End Check Admin Permissions ---
+
+    // 1. Get OAuth Status
+    const authStatus = await getUserAuthStatus(context); // Use the internal helper
+    console.log(`[${functionName}] Auth Status:`, authStatus);
+
+    // 2. Get Zapier Secret (Value) - Only fetch if admin for efficiency?
+    // Let's fetch regardless for now, UI can decide to show/hide
+    let zapierSecret = null;
+    const secretKey = 'zapierSharedSecret';
+    try {
+      zapierSecret = await storage.getSecret(secretKey);
+      console.log(`[${functionName}] Zapier secret ${zapierSecret ? 'retrieved' : 'not set'}.`);
+    } catch (e) {
+      console.error(`[${functionName}] Error retrieving secret from storage key '${secretKey}':`, e);
+      zapierSecret = '{Error retrieving secret}';
+    }
+
+    // 3. Get Webhook URLs
+    let webhookUrls = { create: null, update: null, delete: null };
+    try {
+        webhookUrls.create = await webTrigger.getUrl('worklog-create-trigger');
+        webhookUrls.update = await webTrigger.getUrl('worklog-update-trigger');
+        webhookUrls.delete = await webTrigger.getUrl('worklog-delete-trigger');
+        console.log(`[${functionName}] Webhook URLs retrieved:`, webhookUrls);
+    } catch (urlError) {
+        console.error(`[${functionName}] Failed to retrieve one or more webhook URLs:`, urlError);
+    }
+
+    return {
+      isAdmin, // Return admin status
+      authStatus,
+      zapierSecret,
+      webhookUrls,
+      error: null
+    };
+
+  } catch (error) {
+      console.error(`[${functionName}] Unexpected error fetching admin context:`, error);
+      return {
+          isAdmin: false, // Assume not admin on error
+          authStatus: { authenticated: false, error: 'Error fetching context' },
+          zapierSecret: null,
+          webhookUrls: null,
+          error: `Failed to fetch admin context: ${error.message}`
+      };
+  }
+});
+
+
+// --- Resolver Definition: Regenerate Zapier Secret ---
+/**
+ * Generates a new Zapier shared secret, saves it using storage.setSecret,
+ * and returns the new secret.
+ */
+resolver.define('regenerateZapierSecret', async () => {
+  const functionName = 'regenerateZapierSecret';
+  console.log(`[${functionName}] Attempting to regenerate secret...`);
+  try {
+    const newSecret = generateSecureRandomString(32);
+    const storageKey = 'zapierSharedSecret';
+    await storage.setSecret(storageKey, newSecret);
+    console.log(`[${functionName}] Successfully stored new secret.`);
+    return { newSecret: newSecret };
+  } catch (error) {
+      console.error(`[${functionName}] Failed to set new secret:`, error);
+      throw new Error(`Failed to regenerate secret: ${error.message}`);
+  }
+});
+
+
+// --- Helper: Get User Auth Status (Internal, called by getAdminPageContext) ---
+/**
+ * Checks if the current user has valid OAuth tokens stored.
+ * Attempts to refresh the token if it's expired or nearing expiry.
+ * @param {Object} req - The request object containing context.accountId.
+ * @returns {Promise<Object>} - Object with authenticated status, expiry, timestamp, error.
+ */
+async function getUserAuthStatus(reqContext) {
+  const functionName = 'getUserAuthStatus';
+  console.log(`[${functionName}] Checking auth status...`);
+  const { accountId } = reqContext;
+  if (!accountId) {
+    console.warn(`[${functionName}] No accountId found in context.`);
+    return { authenticated: false, error: 'User context not found' };
+  }
+
+  const tokenStorageKey = `oauth_token:${accountId}`;
+  console.log(`[${functionName}] Checking storage for key: ${tokenStorageKey}`);
+  try {
+    const tokenData = await storage.get(tokenStorageKey);
+
+    if (!tokenData || !tokenData.accessToken || !tokenData.expiresAt) {
+      console.log(`[${functionName}] No valid token data found in storage.`);
+      return { authenticated: false };
+    }
+
+    const now = Date.now();
+    const bufferSeconds = 60 * 1000;
+    if (tokenData.expiresAt < (now + bufferSeconds)) {
+      console.log(`[${functionName}] Token is expired or nearing expiration.`);
+      if (!tokenData.refreshToken) {
+        console.warn(`[${functionName}] Token expired, but no refresh token available.`);
+        await storage.delete(tokenStorageKey);
+        return { authenticated: false, error: 'Session expired' };
+      }
+
+      console.log(`[${functionName}] Attempting token refresh...`);
+      try {
+        await refreshOAuthToken(accountId, tokenData.refreshToken);
+        console.log(`[${functionName}] Token refreshed successfully via imported function.`);
+        const refreshedTokenData = await storage.get(tokenStorageKey);
+        return {
+          authenticated: true,
+          expiresAt: refreshedTokenData?.expiresAt,
+          timestamp: refreshedTokenData?.timestamp
+        };
+      } catch (refreshError) {
+        console.error(`[${functionName}] Token refresh failed: ${refreshError.message}`);
+        if (refreshError.requiresReAuthentication || refreshError.message.includes("re-authenticate")) {
+             await storage.delete(tokenStorageKey);
+             return { authenticated: false, error: 'Session expired, re-authentication required' };
+        } else {
+             return { authenticated: false, error: 'Session expired, refresh failed' };
+        }
+      }
+    } else {
+      console.log(`[${functionName}] Valid token found.`);
+      return {
+        authenticated: true,
+        expiresAt: tokenData.expiresAt,
+        timestamp: tokenData.timestamp
+      };
+    }
+  } catch (error) {
+    console.error(`[${functionName}] Error accessing storage: ${error.message}`);
+    return { authenticated: false, error: 'Storage access error' };
+  }
+}
+
+// === EXPORT THE RESOLVER DEFINITIONS ===
 export const handler = resolver.getDefinitions();

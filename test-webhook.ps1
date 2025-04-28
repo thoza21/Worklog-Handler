@@ -2,13 +2,13 @@
 
 # --- IMPORTANT --- 
 # Replace this URL with the actual URL obtained from `forge install --show-triggers` or `forge webtrigger`
-$webhookUrl = "https://8821cede-9470-4761-ba54-ad700c17298d.hello.atlassian-dev.net/x1/3rF1MyXPEXz3xJlp0dm2erXMMUM"
+$webhookUrl = "https://a8de7690-6599-485e-ada7-acceda2fd795.hello.atlassian-dev.net/x1/qGxP9ZD3p1TaFS5YBdLbhB8KAVE"
 
 # --- OPTIONAL --- 
 # Define the secret header (currently NOT validated by the handler)
 # If you implement secret validation, ensure this matches the stored secret.
 $secretHeader = @{
-    "x-zapier-secret" = "LgJZg00w82nawBYAnMPMaxV1oxubSqMH"
+    "x-zapier-secret" = "TiiWqns2i2ouIAxx8ROjfFGuh9wr03vM"
 }
 
 # --- USER INPUT --- 
@@ -35,33 +35,35 @@ $payloadJson = $worklogPayload | ConvertTo-Json -Depth 5
 $headers = $secretHeader
 $headers.Add("Content-Type", "application/json")
 
-# Make the POST request using Invoke-RestMethod
+# Make the POST request using Invoke-WebRequest for more control
 Write-Host "Sending POST request to $webhookUrl..."
 Write-Host "Payload: $payloadJson"
 try {
-    $response = Invoke-RestMethod -Uri $webhookUrl -Method Post -Headers $headers -Body $payloadJson -ErrorAction Stop
-    Write-Host "Request successful!"
-    Write-Host "Response:"
-    # Attempt to format the response as JSON if possible
-    try {
-        $response | ConvertTo-Json -Depth 5 
-    } catch {
-        Write-Host "(Response was not valid JSON)"
-        Write-Host $response
-    }
-} catch {
-    Write-Error "Request failed: $($_.Exception.Message)"
-    if ($_.Exception.Response) {
-        $errorResponse = $_.Exception.Response.GetResponseStream()
-        $reader = New-Object System.IO.StreamReader($errorResponse)
-        $errorBody = $reader.ReadToEnd();
-        Write-Host "Error Response Body:"
-        # Attempt to format the error as JSON if possible
+    # Use Invoke-WebRequest and don't stop on non-2xx responses initially
+    $response = Invoke-WebRequest -Uri $webhookUrl -Method Post -Headers $headers -Body $payloadJson # -ErrorAction Stop removed
+
+    # Explicitly check the status code
+    if ($response.StatusCode -eq 200) {
+        Write-Host "Request successful! (Status Code: $($response.StatusCode))"
+        Write-Host "Response Body:"
+        # Response body is in the Content property
         try {
-            $errorBody | ConvertFrom-Json | ConvertTo-Json -Depth 5
+            # Attempt to parse and re-format as JSON
+            $response.Content | ConvertFrom-Json | ConvertTo-Json -Depth 5
         } catch {
-             Write-Host "(Error body was not valid JSON)"
-             Write-Host $errorBody
+            Write-Host "(Response body was not valid JSON or parsing failed)"
+            Write-Host $response.Content
         }
+    } else {
+        # Handle non-200 responses as errors
+        Write-Error "Request failed! (Status Code: $($response.StatusCode))"
+        Write-Host "Error Response Body:"
+        Write-Host $response.Content
     }
+
+} catch {
+    # Catch other errors (network issues, invalid URL, etc.)
+    Write-Error "An unexpected error occurred: $($_.Exception.Message)"
+    # Optional: Log more details from $_ if needed
+    # Write-Host $_.Exception
 } 
