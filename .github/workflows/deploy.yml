@@ -1,0 +1,43 @@
+name: Deploy Forge App
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          
+      - name: Install Forge CLI
+        run: npm install -g @forge/cli
+        
+      - name: Install dependencies
+        run: |
+          npm install
+          cd static/hello-world
+          npm install
+          cd ../..
+      
+      - name: Build frontend
+        run: |
+          cd static/hello-world
+          npm run build
+          cd ../..
+      
+      - name: Set up Forge credentials
+        run: |
+          echo "${{ secrets.FORGE_EMAIL }}" | forge login
+        
+      - name: Deploy to Forge
+        run: forge deploy --no-verify
+        env:
+          CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }} 
