@@ -35,6 +35,13 @@ modules:
     - key: regenerateZapierSecret # Generates and saves a new Zapier secret
       handler: index.handler
 
+    # --- Resolver Function Definitions (Shortened Keys) ---
+    - key: getActionLogFn # <-- Shortened Key
+      handler: resolvers.getActionLogResolver
+    - key: getCredCheckFn # <-- Shortened Key
+      handler: resolvers.credentialCheckResolver
+    # --- End Resolver Function Definitions ---
+
   webtrigger:
     # Ensure only one definition for each key
     - key: oauth-callback-trigger
@@ -143,11 +150,18 @@ modules:
 
   jira:globalPage:
     - key: worklog-handler-global-page
-      resource: main # Should match the resource key below
+      resource: main
       resolver:
-        function: handler # Should match the main resolver function key
+        function: handler
       title: Worklog Handler
-      layout: basic # Default layout
+      layout: basic
+
+  jira:projectPage:
+    - key: worklog-action-log-viewer
+      resource: action-log-ui
+      resolver:
+        function: getActionLogFn
+      title: Worklog Action Log
 
 permissions:
   scopes:
@@ -161,8 +175,10 @@ permissions:
   external:
     fetch:
       backend:
-        - api.atlassian.com 
-        - auth.atlassian.com
+        - 'https://auth.atlassian.com/oauth/token'
+        - 'https://api.atlassian.com/me'
+        - 'https://api.atlassian.com/oauth/token/accessible-resources'
+        - 'https://api.atlassian.com/*' # Existing Jira API access
 
 app:
   id: ari:cloud:ecosystem::app/a8de7690-6599-485e-ada7-acceda2fd795
@@ -173,3 +189,5 @@ app:
 resources:
   - key: main
     path: static/hello-world/build
+  - key: action-log-ui
+    path: static/action-log-viewer/build

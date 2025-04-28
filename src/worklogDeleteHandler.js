@@ -1,5 +1,6 @@
 import { validateZapierSecret } from './secureUtils';
 import { callJiraApiWithRetry } from './jiraApiHelper';
+import { logAction } from './actionLogger';
 
 /**
  * Parses the request body, ensuring it's valid JSON.
@@ -36,12 +37,16 @@ export const handler = async (req) => {
     console.log(`[${handlerName}] Invoked.`);
     
     let outputKey = 'error-internal'; // Default
+    let logDetails = {}; // <-- Initialize log details
 
     try {
         await validateZapierSecret(req.headers);
         const payload = parseRequestBody(req);
         const { userId, issueKey, worklogId } = payload;
         const accountId = userId;
+
+        // <-- Store details for logging
+        logDetails = { actionType: 'delete', success: false, issueKey, worklogId, accountId };
 
         if (!accountId || !issueKey || !worklogId) {
             const missing = [
@@ -51,6 +56,7 @@ export const handler = async (req) => {
             ].filter(Boolean).join(', ');
             console.error(`[${handlerName}] Invalid payload - missing required fields: ${missing}. Payload:`, payload);
             outputKey = 'error-bad-request';
+            logDetails.message = `Missing required fields: ${missing}.`; // <-- Log error detail
             throw new Error(`Missing required fields in payload for delete: ${missing}.`);
         }
         console.log(`[${handlerName}] Processing DELETE request for user: ${accountId}, issue: ${issueKey}, worklog: ${worklogId}`);
@@ -65,6 +71,9 @@ export const handler = async (req) => {
             // --- End Log ---
             
             outputKey = 'success-deleted';
+            logDetails.success = true; // <-- Mark success
+            logDetails.message = `Worklog ${worklogId} deleted successfully.`; // <-- Success message
+            await logAction(logDetails); // <-- Log success action
             return { outputKey }; // Return static success key
         } else {
             // Handle potential errors from DELETE
@@ -86,6 +95,7 @@ export const handler = async (req) => {
             } catch (e) { /* Ignore parse error */ }
 
             console.error(`[${handlerName}] Jira API call failed. Status: ${apiResult.status}, Issue: ${issueKey}, Worklog: ${worklogId}, Body: ${errorBody}`);
+            logDetails.message = `Jira API Error: ${apiResult.status} - ${errorMessage}`; // <-- Log error detail
             throw new Error(errorMessage); // Throw to be caught below
         }
 
@@ -99,7 +109,16 @@ export const handler = async (req) => {
         // Use API status mapping if available, otherwise default internal
         outputKey = outputKey || 'error-internal'; 
 
-        // Return static error key
+        // Ensure log details has basic info even if error happened early
+        logDetails.actionType = logDetails.actionType || 'delete';
+        logDetails.success = false;
+        logDetails.issueKey = logDetails.issueKey || payload?.issueKey || 'Unknown';
+        logDetails.worklogId = logDetails.worklogId || payload?.worklogId || 'Unknown';
+        logDetails.accountId = logDetails.accountId || payload?.userId || 'Unknown';
+        // Use specific error message if available, otherwise the caught error
+        logDetails.message = logDetails.message || error.message;
+
+        await logAction(logDetails); // <-- Log failure action
         return { outputKey };
     }
 }; 

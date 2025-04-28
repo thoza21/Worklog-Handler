@@ -1,5 +1,6 @@
 import { validateZapierSecret } from './secureUtils';
 import { callJiraApiWithRetry } from './jiraApiHelper';
+import { logAction } from './actionLogger';
 
 /**
  * Parses the request body, ensuring it's valid JSON.
@@ -38,6 +39,7 @@ export const handler = async (req) => {
     // console.log(`[${handlerName}] Raw headers:`, JSON.stringify(req.headers || {}, null, 2));
 
     let outputKey = 'error-internal'; // Default to internal error
+    let logDetails = {}; // <-- Initialize log details
 
     try {
         // 1. Validate Secret (using secureUtils)
@@ -51,6 +53,9 @@ export const handler = async (req) => {
         const { userId, issueKey, started, timeSpentSeconds } = payload;
         const accountId = userId;
 
+        // <-- Store details for logging
+        logDetails = { actionType: 'create', success: false, issueKey, accountId }; 
+
         if (!accountId || !issueKey || !started || timeSpentSeconds === undefined) {
             const missing = [
                 !accountId && 'userId',
@@ -60,6 +65,7 @@ export const handler = async (req) => {
             ].filter(Boolean).join(', ');
             console.error(`[${handlerName}] Invalid payload - missing required fields: ${missing}. Payload:`, payload);
             outputKey = 'error-bad-request';
+            logDetails.message = `Missing required fields: ${missing}.`; // <-- Log error detail
             throw new Error(`Missing required fields in payload for create: ${missing}.`);
         }
         console.log(`[${handlerName}] Processing CREATE request for user: ${accountId}, issue: ${issueKey}`);
@@ -85,6 +91,7 @@ export const handler = async (req) => {
                 const jiraError = JSON.parse(errorBody);
                 errorMessage = jiraError.errorMessages?.join(', ') || JSON.stringify(jiraError.errors) || errorMessage;
             } catch (e) { /* Ignore parse error */ }
+            logDetails.message = `Jira API Error: ${apiResult.status} - ${errorMessage}`; // <-- Log error detail
             throw new Error(errorMessage); // Throw to be caught below
         }
 
@@ -94,6 +101,10 @@ export const handler = async (req) => {
         // --- End Log ---
 
         outputKey = 'success-created';
+        logDetails.success = true; // <-- Mark success
+        logDetails.worklogId = responseData.id; // <-- Add worklog ID
+        logDetails.message = `Worklog ${responseData.id} created successfully.`; // <-- Success message
+        await logAction(logDetails); // <-- Log success action
         return { outputKey }; // Return static success key
 
     } catch (error) {
@@ -105,7 +116,15 @@ export const handler = async (req) => {
         // Use the outputKey set during API failure if available, otherwise default internal error
         outputKey = outputKey || 'error-internal'; 
 
-        // Return static error key
+        // Ensure log details has basic info even if error happened early
+        logDetails.actionType = logDetails.actionType || 'create';
+        logDetails.success = false;
+        logDetails.issueKey = logDetails.issueKey || payload?.issueKey || 'Unknown';
+        logDetails.accountId = logDetails.accountId || payload?.userId || 'Unknown';
+        // Use specific error message if available, otherwise the caught error
+        logDetails.message = logDetails.message || error.message;
+
+        await logAction(logDetails); // <-- Log failure action
         return { outputKey };
     }
 }; 

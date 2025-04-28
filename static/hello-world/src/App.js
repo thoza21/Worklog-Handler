@@ -300,34 +300,34 @@ function UserView({ authStatus }) {
   );
 }
 
+// --- OAuth Button Component --- //
 function OAuthButton() {
-  const [isLoading, setIsLoading] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
   const handleOAuthClick = async () => {
-    if (isLoading) return;
-    setIsLoading(true);
+    setLoading(true);
     setError(null);
+    console.log('[OAuthButton] Starting OAuth flow...');
     try {
-      console.log('[OAuthButton] Starting OAuth flow...');
-      let authUrl;
-      try {
-        authUrl = await invoke('getOAuthLoginUrl');
-        console.log('[OAuthButton] OAuth URL fetched successfully:', authUrl);
-        if (!authUrl) {
-          throw new Error('No authorization URL returned from backend');
-        }
-      } catch (urlError) {
-        console.error('[OAuthButton] Failed to fetch OAuth URL:', urlError);
-        throw new Error('Could not generate login URL. Please try again.');
+      // Call the correct resolver function to get the OAuth URL
+      const oauthUrl = await invoke('getOAuthLoginUrl'); 
+      console.log('[OAuthButton] OAuth URL fetched successfully:', oauthUrl);
+
+      // Check if we actually got a URL string back
+      if (typeof oauthUrl === 'string' && oauthUrl.startsWith('https://')) {
+        // Use the fetched URL to navigate the user
+        await router.open(oauthUrl);
+      } else {
+        // Handle cases where the resolver didn't return a valid URL
+        console.error('[OAuthButton] Invalid OAuth URL received:', oauthUrl);
+        setError('Could not retrieve the authorization URL. Please check app configuration.');
       }
-      await router.open(authUrl);
-      console.log('[OAuthButton] Opened OAuth URL via router.open');
     } catch (err) {
       console.error('[OAuthButton] OAuth process error:', err);
-      setError(err.message || 'Failed to start authorization process.');
+      setError(err.message || 'An unexpected error occurred during authentication.');
     } finally {
-      setIsLoading(false);
+      setLoading(false);
     }
   };
 
@@ -335,17 +335,12 @@ function OAuthButton() {
     <div>
       <button
         onClick={handleOAuthClick}
-        disabled={isLoading}
+        disabled={loading}
         style={styles.actionButton}
       >
-        <span>{isLoading ? '⏳' : '🔐'}</span>
-        <span>{isLoading ? 'Connecting...' : 'Connect / Reconnect Jira Account'}</span>
+        {loading ? 'Processing...' : '🔗 Connect / Reconnect Jira Account'}
       </button>
-      {error && (
-        <div style={styles.inlineError}>
-          Error: {error}
-        </div>
-      )}
+      {error && <p style={{ color: 'red', marginTop: '10px' }}>Error: {error}</p>}
     </div>
   );
 }
