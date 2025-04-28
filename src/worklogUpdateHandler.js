@@ -36,12 +36,13 @@ export const handler = async (req) => {
     const handlerName = 'WorklogUpdateHandler';
     console.log(`[${handlerName}] Invoked.`);
     
-    let outputKey = 'error-internal'; // Default
-    let logDetails = {}; // Initialize log details
+    let outputKey = 'error-internal';
+    let logDetails = {};
+    let payload = null;
 
     try {
         await validateZapierSecret(req.headers);
-        const payload = parseRequestBody(req);
+        payload = parseRequestBody(req);
         const { userId, issueKey, started, timeSpentSeconds, worklogId } = payload;
         const accountId = userId;
 
@@ -106,13 +107,12 @@ export const handler = async (req) => {
         // Use API status mapping if available, otherwise default internal
         outputKey = outputKey || 'error-internal';
 
-        // Ensure log details has basic info even if error happened early
+        // Now this is safe because payload is declared in the outer scope
         logDetails.actionType = logDetails.actionType || 'update';
         logDetails.success = false;
         logDetails.issueKey = logDetails.issueKey || payload?.issueKey || 'Unknown';
         logDetails.worklogId = logDetails.worklogId || payload?.worklogId || 'Unknown';
         logDetails.accountId = logDetails.accountId || payload?.userId || 'Unknown';
-        // Use specific error message if available, otherwise the caught error
         logDetails.message = logDetails.message || error.message;
 
         await logAction(logDetails); // Log failure action

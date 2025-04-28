@@ -38,15 +38,16 @@ export const handler = async (req) => {
     // Log headers for debugging secret issues (consider removing in production)
     // console.log(`[${handlerName}] Raw headers:`, JSON.stringify(req.headers || {}, null, 2));
 
-    let outputKey = 'error-internal'; // Default to internal error
-    let logDetails = {}; // <-- Initialize log details
+    let outputKey = 'error-internal';
+    let logDetails = {};
+    let payload = null; // <-- Declare payload here and initialize to null
 
     try {
         // 1. Validate Secret (using secureUtils)
         await validateZapierSecret(req.headers); // Now async
 
         // 2. Parse Body
-        const payload = parseRequestBody(req);
+        payload = parseRequestBody(req);
 
         // 3. Extract and Validate Payload Data for CREATE
         // Note: `event` field is not strictly needed by this handler but might be useful for logging
@@ -116,12 +117,11 @@ export const handler = async (req) => {
         // Use the outputKey set during API failure if available, otherwise default internal error
         outputKey = outputKey || 'error-internal'; 
 
-        // Ensure log details has basic info even if error happened early
+        // Now this is safe because payload is declared in the outer scope
         logDetails.actionType = logDetails.actionType || 'create';
         logDetails.success = false;
-        logDetails.issueKey = logDetails.issueKey || payload?.issueKey || 'Unknown';
-        logDetails.accountId = logDetails.accountId || payload?.userId || 'Unknown';
-        // Use specific error message if available, otherwise the caught error
+        logDetails.issueKey = logDetails.issueKey || payload?.issueKey || 'Unknown'; // Optional chaining works
+        logDetails.accountId = logDetails.accountId || payload?.userId || 'Unknown';   // Optional chaining works
         logDetails.message = logDetails.message || error.message;
 
         await logAction(logDetails); // <-- Log failure action

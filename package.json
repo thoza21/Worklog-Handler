@@ -5,12 +5,13 @@
   "license": "MIT",
   "private": true,
   "devDependencies": {
+    "cross-env": "^7.0.3",
     "eslint": "^8.56.0",
     "eslint-plugin-react-hooks": "^4.6.0"
   },
   "scripts": {
-  "build-and-deploy": "npm --prefix static/hello-world run build && forge deploy"
-},
+    "build-and-deploy": "npm --prefix static/hello-world run build && npm --prefix static/action-log-viewer run build && forge deploy"
+  },
   "dependencies": {
     "@forge/resolver": "1.6.10"
   }
